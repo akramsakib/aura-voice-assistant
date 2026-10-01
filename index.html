@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#050810">
+<title>AURA — Voice Personal Assistant</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%2300e5ff'/%3E%3Ccircle cx='50' cy='50' r='26' fill='%23050810'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Activation overlay -->
+<div id="overlay">
+  <div class="overlay-inner">
+    <div class="orb small idle"><div class="orb-core"></div><div class="orb-ring"></div></div>
+    <h1>AURA</h1>
+    <p class="tagline">Your voice-activated personal assistant</p>
+    <button id="activateBtn" class="primary-btn">⚡ Activate AURA</button>
+    <p class="overlay-note">Voice needs <b>Chrome or Edge</b> + microphone permission.<br>You can also type to AURA — everything else works everywhere.</p>
+    <button id="openTabBtn" class="ghost-btn">↗ Open in new tab (best for mic)</button>
+  </div>
+</div>
+
+<!-- App -->
+<header id="topbar">
+  <div class="brand"><span class="dot"></span><span id="brandName">AURA</span></div>
+  <div id="statusLine">Tap the mic or say the wake word</div>
+  <div class="top-actions">
+    <button id="openTabBtn2" class="icon-btn" title="Open in own tab">↗</button>
+    <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- Active timers / reminders panel -->
+<div id="activePanel" class="hidden"></div>
+
+<main id="stage">
+  <div class="orb-wrap">
+    <div id="orb" class="orb idle"><div class="orb-core"></div><div class="orb-ring"></div><div class="orb-ring r2"></div></div>
+    <div id="interim" class="interim"></div>
+  </div>
+  <div id="chat" class="chat"></div>
+</main>
+
+<footer id="controlbar">
+  <div class="quick-chips">
+    <button class="chip" data-cmd="what's the weather">🌤 Weather</button>
+    <button class="chip" data-cmd="good morning">☀️ Briefing</button>
+    <button class="chip" data-cmd="tell me a joke">😄 Joke</button>
+    <button class="chip" data-cmd="set a timer for 5 minutes">⏱ Timer 5m</button>
+    <button class="chip" data-cmd="what can you do">❓ Help</button>
+  </div>
+  <div class="input-row">
+    <button id="micBtn" class="mic-btn" title="Talk">🎤</button>
+    <input id="textInput" type="text" placeholder="Type or speak a command… e.g. “remind me to drink water in 30 minutes”" autocomplete="off">
+    <button id="sendBtn" class="icon-btn" title="Send">➤</button>
+    <button id="handsFreeBtn" class="icon-btn toggle" title="Hands-free (always listening)">🔁</button>
+    <button id="muteBtn" class="icon-btn toggle" title="Voice output on/off">🔊</button>
+  </div>
+</footer>
+
+<!-- Settings drawer -->
+<div id="settings" class="drawer hidden">
+  <div class="drawer-head"><h2>Settings</h2><button id="closeSettings" class="icon-btn">✕</button></div>
+  <div class="drawer-body">
+    <label>Assistant name <input id="setName" type="text"></label>
+    <label>Your name <input id="setUser" type="text" placeholder="e.g. Alex"></label>
+    <label>Default city (weather) <input id="setCity" type="text"></label>
+    <label>Voice <select id="setVoice"></select></label>
+    <label>Speech speed <input id="setRate" type="range" min="0.6" max="1.6" step="0.05"><span id="rateVal"></span></label>
+    <label>Speech pitch <input id="setPitch" type="range" min="0.5" max="1.6" step="0.05"><span id="pitchVal"></span></label>
+    <label class="row"><input id="setWake" type="checkbox"> Require wake word</label>
+    <label>Wake word <input id="setWakeWord" type="text" placeholder="aura"></label>
+
+    <h3>🧠 AI brain</h3>
+    <p class="hint">AURA ships with a <b>free cloud brain — no API key needed, ever</b>. For guaranteed reliability you can optionally plug in your own key. Keys are stored <b>only in this browser</b>.</p>
+    <label>Provider
+      <select id="setProvider">
+        <option value="free">✨ Built-in free brain — no key needed (default)</option>
+        <option value="puter">☁️ Free cloud brain (Puter) — no key needed</option>
+        <option value="openai">OpenAI — my own key (gpt-4o-mini)</option>
+        <option value="gemini">Google Gemini — my own key (2.0 Flash)</option>
+        <option value="none">Off — built-in skills only</option>
+      </select>
+    </label>
+    <label id="apiKeyWrap">API key <input id="setApiKey" type="password" placeholder="only needed for OpenAI / Gemini"></label>
+
+    <h3>🗃 Data</h3>
+    <div class="row-gap">
+      <button id="exportNotes" class="ghost-btn">⬇ Export notes (.txt)</button>
+      <button id="wipeData" class="danger-btn">🗑 Erase all my data</button>
+    </div>
+    <p class="hint">Recognition audio is processed by your browser provider (e.g. Google Chrome). Everything else — notes, lists, settings — never leaves this device.</p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
