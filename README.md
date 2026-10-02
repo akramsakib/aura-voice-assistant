@@ -43,6 +43,8 @@ python3 -m http.server 8080
 | 🚀 Open apps/sites | “open YouTube” · “open Gmail” · “open Shopee” · “open WhatsApp” … |
 | 📰 News | “latest news” · “news about Malaysia” |
 | 😄 Fun | “tell me a joke” · “motivate me” · “flip a coin” · “roll a d20” |
+| 👀 **Vision (Astra-style)** | 📷 button or “take a photo” → ask “what am I holding?” · “read this text” · “describe what you see” — camera or upload, answers about real images |
+| 🗣 **Live conversation** | Tap 🔁 once → talk back-and-forth continuously; AURA listens again the moment she finishes answering. “go to sleep” to stop |
 | 🎛 Control | “stop talking” · “repeat” · “speak faster” · “go to sleep” · “what can you do” |
 | 🔋 Device | “battery status” |
 
@@ -68,10 +70,27 @@ If any built-in skill can't handle a phrase, the AI brain replies with a short,
 speakable answer and remembers the conversation context. If both free providers
 are momentarily unreachable, AURA degrades gracefully to a Google search link.
 
-**Optional — maximum reliability:** open ⚙ Settings → **AI brain** and plug in
-your own **OpenAI** (`gpt-4o-mini`) or **Google Gemini** (`2.0 Flash`) key.
-Keys are stored **only in your browser's localStorage** and are sent directly
-from your browser to the provider.
+**Optional — maximum reliability & power:** open ⚙ Settings → **AI brain** and
+plug in your own **Claude** (Sonnet · vision ✓), **OpenAI** (`gpt-4o-mini` ·
+vision ✓), or **Google Gemini** (`2.0 Flash` · vision ✓) key. Keys are stored
+**only in your browser's localStorage** and are sent directly from your browser
+to the provider.
+
+## 👀 Vision
+
+Tap 📷 or say **“take a photo”** → snap with your camera (or upload any image)
+→ ask anything about it: *“what am I holding?”*, *“read this label”*,
+*“translate what's on this sign”*, *“is this plant healthy?”* …
+
+Guaranteed eyes with any own key (Claude / GPT-4o-mini / Gemini Flash — all
+vision-capable); the free no-key path tries Puter's vision models automatically.
+
+## 🗣 Continuous conversation
+
+Tap 🔁 once and just keep talking — AURA answers, then instantly re-opens her
+ears (the mic pauses while she speaks so she never hears herself). Say
+**“go to sleep”** or toggle 🔁 off to stop. Enable “Require wake word” in ⚙
+Settings if you want her to only respond when addressed by name.
 
 ## 🌍 Hosted version
 

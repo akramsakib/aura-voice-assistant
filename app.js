@@ -47,6 +47,24 @@ function loadVoices() {
 }
 if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
 
+let speechPausedMic = false; /* true while AURA is speaking — prevents her hearing herself */
+
+function pauseMicForSpeech() {
+  if (!supported || !micOn) return;
+  speechPausedMic = true;
+  try { rec.abort(); } catch (e) {}
+  micOn = false; updateMicBtn();
+}
+function resumeMicAfterSpeech() {
+  if (!speechPausedMic) return;
+  speechPausedMic = false;
+  if (wantMic && !micOn) {
+    setTimeout(() => {
+      try { rec.start(); micOn = true; setState('listening'); updateMicBtn(); blip(660, 0.07); } catch (e) {}
+    }, 320);
+  }
+}
+
 function speak(text, after) {
   const plain = String(text).replace(/[•*_#`>]/g, '').replace(/https?:\/\/\S+/g, 'link').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').trim();
   lastSpoken = plain;
@@ -56,11 +74,11 @@ function speak(text, after) {
   const v = voices.find(x => x.voiceURI === settings.voiceURI) || voices.find(x => x.lang.startsWith('en') && /natural|neural|google/i.test(x.name)) || voices.find(x => x.lang.startsWith('en'));
   if (v) u.voice = v;
   u.rate = settings.rate; u.pitch = settings.pitch;
-  u.onstart = () => setState('speaking');
-  u.onend = u.onerror = () => { setState(micOn ? 'listening' : 'idle'); if (after) after(); };
+  u.onstart = () => { setState('speaking'); pauseMicForSpeech(); };
+  u.onend = u.onerror = () => { setState(micOn ? 'listening' : 'idle'); resumeMicAfterSpeech(); if (after) after(); };
   synth.speak(u);
 }
-function stopSpeaking() { if (synth) synth.cancel(); setState(micOn ? 'listening' : 'idle'); }
+function stopSpeaking() { if (synth) synth.cancel(); speechPausedMic = false; setState(micOn ? 'listening' : 'idle'); }
 
 /* ---------------- sound cues ---------------- */
 let actx = null;
@@ -102,6 +120,7 @@ if (supported) {
   };
   rec.onend = () => {
     micOn = false; updateMicBtn();
+    if (speechPausedMic) return; /* paused because AURA is speaking — resumeMicAfterSpeech handles it */
     if (wantMic) { setTimeout(() => { try { rec.start(); micOn = true; updateMicBtn(); setState('listening'); } catch (err) {} }, 280); }
     else setState('idle');
   };
@@ -265,6 +284,16 @@ function wordsToMath(s) {
 
 /* ---------------- AI brain (free by default, optional keys) ---------------- */
 const history = [];
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+
+/* Extract a text answer from whatever shape a provider returns */
+function textFrom(resp) {
+  if (!resp) return '';
+  if (typeof resp === 'string') return resp.trim();
+  if (resp.message && (resp.message.content || resp.message.text)) return String(resp.message.content || resp.message.text).trim();
+  if (resp.text) return String(resp.text).trim();
+  return '';
+}
 
 /* Free brain #1: keyless anonymous inference (Pollinations GET API) */
 async function askFreeBrain(persona) {
@@ -335,6 +364,15 @@ async function askAI(text) {
       const j = await r.json();
       const out = j.choices && j.choices[0] && j.choices[0].message.content;
       if (out) { history.push({ role: 'assistant', content: out }); return out; }
+    } else if (settings.provider === 'claude') {
+      const r = await fetchT('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 260, system: persona, messages: history })
+      }, 25000);
+      const j = await r.json();
+      const out = j.content && j.content[0] && j.content[0].text;
+      if (out) { history.push({ role: 'assistant', content: out }); return out; }
     } else if (settings.provider === 'gemini') {
       const r = await fetchT('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(settings.apiKey), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -346,6 +384,119 @@ async function askAI(text) {
     }
   } catch (e) {}
   return null;
+}
+
+/* ============================================================
+   👀 VISION — camera & image Q&A (Astra-style)
+   ============================================================ */
+let camStream = null, camShot = null;
+
+async function openCameraModal() {
+  $('#camModal').classList.remove('hidden');
+  $('#camPreview').classList.add('hidden'); $('#retakeBtn').classList.add('hidden');
+  $('#camVideo').classList.remove('hidden'); $('#snapBtn').classList.remove('hidden');
+  camShot = null; $('#camQuestion').value = '';
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    $('#camVideo').srcObject = camStream;
+    $('#camHint').textContent = '📷 Camera live — snap a photo, or upload an image, then ask me anything about it.';
+  } catch (e) {
+    $('#camVideo').classList.add('hidden'); $('#snapBtn').classList.add('hidden');
+    $('#camHint').textContent = "⚠️ Camera unavailable here (blocked by browser/iframe — try ↗ open in new tab, or HTTPS). You can still ⬆ Upload a photo.";
+  }
+}
+function closeCameraModal() {
+  $('#camModal').classList.add('hidden');
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+}
+function showPreview(dataUrl) {
+  camShot = dataUrl;
+  const img = $('#camPreview'); img.src = dataUrl; img.classList.remove('hidden');
+  $('#camVideo').classList.add('hidden'); $('#snapBtn').classList.add('hidden'); $('#retakeBtn').classList.remove('hidden');
+  $('#camHint').textContent = '✅ Photo ready — type a question (or leave empty to describe it) and tap Ask AURA.';
+}
+function retakePhoto() {
+  camShot = null; $('#camPreview').classList.add('hidden'); $('#retakeBtn').classList.add('hidden');
+  if (camStream) { $('#camVideo').classList.remove('hidden'); $('#snapBtn').classList.remove('hidden'); }
+  $('#camHint').textContent = '📷 Snap again whenever you\'re ready.';
+}
+function snapPhoto() {
+  const v = $('#camVideo'); if (!v || !v.videoWidth) { $('#camHint').textContent = '⚠️ No camera frame yet — wait a second or upload instead.'; return; }
+  const c = $('#camCanvas'); c.width = Math.min(v.videoWidth, 1280); c.height = Math.round(v.videoHeight * c.width / v.videoWidth);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  showPreview(c.toDataURL('image/jpeg', 0.85));
+}
+function handleUpload(file) {
+  if (!file) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    const img = new Image();
+    img.onload = () => { /* downscale big photos for faster vision calls */
+      const c = $('#camCanvas'); const scale = Math.min(1, 1280 / img.width);
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      showPreview(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = fr.result;
+  };
+  fr.readAsDataURL(file);
+}
+
+/* Ask the brain about an image — tries own-key vision models, then free Puter vision */
+async function visionAnswer(dataUrl, question) {
+  const b64 = dataUrl.split(',')[1] || '';
+  const q = (question || 'Describe this image in detail.').trim();
+  const vp = `You are ${settings.name}, a witty voice assistant answering about a photo. Describe what you actually see and answer the question directly. 1-3 short sentences, plain prose, spoken aloud — no markdown, no bullet points.`;
+  try {
+    if (settings.provider === 'claude' && settings.apiKey) {
+      const r = await (await fetchT('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 280, system: vp, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: q }] }] })
+      }, 30000)).json();
+      const out = r.content && r.content[0] && r.content[0].text;
+      if (out) return out;
+    }
+    if (settings.provider === 'openai' && settings.apiKey) {
+      const r = await (await fetchT('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.apiKey },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: vp }, { role: 'user', content: [{ type: 'text', text: q }, { type: 'image_url', image_url: { url: dataUrl } }] }], max_tokens: 220 })
+      }, 30000)).json();
+      const out = r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content;
+      if (out) return out;
+    }
+    if (settings.provider === 'gemini' && settings.apiKey) {
+      const r = await (await fetchT('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(settings.apiKey), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: vp + ' Question: ' + q }, { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }] })
+      }, 30000)).json();
+      const out = r.candidates && r.candidates[0] && r.candidates[0].content && r.candidates[0].content.parts[0] && r.candidates[0].content.parts[0].text;
+      if (out) return out;
+    }
+  } catch (e) {}
+  /* free no-key vision via Puter */
+  if (settings.provider === 'free' || settings.provider === 'puter') {
+    try {
+      await loadPuter();
+      const race = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('vision timeout')), 35000))]);
+      for (const opts of [{ model: 'claude-sonnet-4' }, { model: 'gpt-4o-mini' }, {}]) {
+        try { const out = textFrom(await race(window.puter.ai.chat(vp + '\nQuestion: ' + q, dataUrl, opts))); if (out) return out; } catch (e2) {}
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function askAboutImage(question) {
+  if (!camShot) { $('#camHint').textContent = '⚠️ Snap a photo or upload an image first.'; return; }
+  const dataUrl = camShot, q = (question || '').trim();
+  closeCameraModal();
+  addMsg('user', `<img src="${dataUrl}" style="max-width:220px;border-radius:10px;display:block;margin-bottom:6px" alt="photo">👀 ${esc(q || 'What do you see?')}`);
+  setState('thinking');
+  const ans = await visionAnswer(dataUrl, q);
+  if (ans) respond(ans);
+  else respond("Vision is offline right now — the free vision service didn't respond. Add a Claude, OpenAI or Gemini key in ⚙ Settings for guaranteed eyes, or try again in a moment.");
 }
 
 /* ============================================================
@@ -599,6 +750,13 @@ async function handle(raw) {
       return true;
     }],
 
+    /* ---- vision ---- */
+    [/^(take|snap) a (photo|picture)|take a selfie|use the camera|open the camera|look at (this|my|me)|what am i holding|describe (my surroundings|what you see)|read this|what('s| is) (this|that)( in front of me)?$/i, () => {
+      openCameraModal();
+      respond('Camera mode is on. Snap a photo or upload one, then ask me anything about it — I have eyes now.');
+      return true;
+    }],
+
     /* ---- device ---- */
     [/battery( level| status)?/i, async () => {
       try { const b = await navigator.getBattery(); respond(`Your battery is at ${Math.round(b.level * 100)} percent${b.charging ? ' and charging' : ', not charging'}.`); }
@@ -704,7 +862,9 @@ function showHelp() {
     <div class="mini"><b>📰 News</b><br>"latest news" · "news about Malaysia"</div>
     <div class="mini"><b>☀️ Briefing</b><br>"good morning" — time, weather & your list</div>
     <div class="mini"><b>😄 Fun</b><br>"tell me a joke" · "motivate me" · "flip a coin" · "roll a die"</div>
-    <div class="mini"><b>🧠 AI chat</b><br>Free cloud brain built in — ask me anything; optional own-key in ⚙ Settings</div>
+    <div class="mini"><b>👀 Vision</b><br>📷 button or "take a photo" — "what am I holding?" · "read this" · "describe what you see"</div>
+    <div class="mini"><b>🗣 Live chat</b><br>Tap 🔁 for continuous conversation — I listen again right after answering</div>
+    <div class="mini"><b>🧠 AI brain</b><br>Free cloud brain built in — ask me anything; Claude/GPT/Gemini keys optional in ⚙</div>
     <div class="mini"><b>🎛 Control</b><br>"stop talking" · "go to sleep" · "speak faster" · "repeat"</div>
   </div>`;
   addMsg('aura', html);
@@ -800,8 +960,8 @@ function boot() {
   $('#micBtn').onclick = () => { stopSpeaking(); if (micOn || wantMic) stopMic(); else startMic(settings.handsFree); };
   $('#handsFreeBtn').onclick = () => {
     settings.handsFree = !settings.handsFree; saveSettings();
-    if (settings.handsFree) { startMic(true); respond(settings.wakeRequired ? `Hands-free on. Say “${settings.wakeWord}” followed by a command.` : 'Hands-free on — I\'m always listening.'); }
-    else { stopMic(); respond('Hands-free off. Tap the mic when you need me.'); }
+    if (settings.handsFree) { startMic(true); respond(settings.wakeRequired ? `Continuous mode on. Say “${settings.wakeWord}” then speak — I'll keep listening between replies.` : 'Continuous conversation on. Just talk — I\'ll answer, then instantly listen again. Say “go to sleep” to stop.'); }
+    else { stopMic(); respond('Continuous mode off. Tap the mic when you need me.'); }
   };
   $('#muteBtn').onclick = () => {
     settings.muted = !settings.muted; saveSettings();
@@ -810,6 +970,16 @@ function boot() {
     if (settings.muted) stopSpeaking(); else speak('Voice is back on!');
   };
   $('#muteBtn').textContent = settings.muted ? '🔇' : '🔊';
+  /* vision modal bindings */
+  $('#camBtn').onclick = openCameraModal;
+  $('#closeCam').onclick = closeCameraModal;
+  $('#snapBtn').onclick = snapPhoto;
+  $('#retakeBtn').onclick = retakePhoto;
+  $('#fileInput').onchange = e => handleUpload(e.target.files && e.target.files[0]);
+  $('#askImgBtn').onclick = () => askAboutImage($('#camQuestion').value);
+  $('#camQuestion').addEventListener('keydown', e => { if (e.key === 'Enter') askAboutImage($('#camQuestion').value); });
+  $('#camModal').addEventListener('click', e => { if (e.target === $('#camModal')) closeCameraModal(); });
+
   $('#sendBtn').onclick = sendText;
   $('#textInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
   document.querySelectorAll('.chip').forEach(c => c.onclick = () => { addMsg('user', esc(c.dataset.cmd)); setState('thinking'); setTimeout(() => handle(c.dataset.cmd).catch(() => respond('Something glitched. Try again?')), 10); });

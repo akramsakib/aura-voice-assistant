@@ -55,10 +55,33 @@
     <button id="micBtn" class="mic-btn" title="Talk">🎤</button>
     <input id="textInput" type="text" placeholder="Type or speak a command… e.g. “remind me to drink water in 30 minutes”" autocomplete="off">
     <button id="sendBtn" class="icon-btn" title="Send">➤</button>
-    <button id="handsFreeBtn" class="icon-btn toggle" title="Hands-free (always listening)">🔁</button>
+    <button id="camBtn" class="icon-btn" title="Vision — snap or upload a photo">📷</button>
+    <button id="handsFreeBtn" class="icon-btn toggle" title="Continuous conversation (hands-free)">🔁</button>
     <button id="muteBtn" class="icon-btn toggle" title="Voice output on/off">🔊</button>
   </div>
 </footer>
+
+<!-- 👀 Vision modal -->
+<div id="camModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><h3>👀 AURA Vision</h3><button id="closeCam" class="icon-btn">✕</button></div>
+    <div class="cam-stage">
+      <video id="camVideo" autoplay playsinline muted></video>
+      <img id="camPreview" class="hidden" alt="captured photo">
+      <canvas id="camCanvas" class="hidden"></canvas>
+      <div id="camHint" class="hint">📷 Point the camera and snap a photo — or upload an image. Then ask me anything about it.</div>
+    </div>
+    <div class="cam-actions">
+      <button id="snapBtn" class="primary-btn small">📸 Snap</button>
+      <label class="ghost-btn">⬆ Upload<input id="fileInput" type="file" accept="image/*" hidden></label>
+      <button id="retakeBtn" class="ghost-btn hidden">↺ Retake</button>
+    </div>
+    <div class="cam-ask">
+      <input id="camQuestion" type="text" placeholder="Ask about this image… (empty = describe it)">
+      <button id="askImgBtn" class="primary-btn small">Ask AURA ➤</button>
+    </div>
+  </div>
+</div>
 
 <!-- Settings drawer -->
 <div id="settings" class="drawer hidden">
@@ -79,12 +102,13 @@
       <select id="setProvider">
         <option value="free">✨ Built-in free brain — no key needed (default)</option>
         <option value="puter">☁️ Free cloud brain (Puter) — no key needed</option>
-        <option value="openai">OpenAI — my own key (gpt-4o-mini)</option>
-        <option value="gemini">Google Gemini — my own key (2.0 Flash)</option>
+        <option value="claude">Claude — my own key (Sonnet · vision ✓)</option>
+        <option value="openai">OpenAI — my own key (gpt-4o-mini · vision ✓)</option>
+        <option value="gemini">Google Gemini — my own key (2.0 Flash · vision ✓)</option>
         <option value="none">Off — built-in skills only</option>
       </select>
     </label>
-    <label id="apiKeyWrap">API key <input id="setApiKey" type="password" placeholder="only needed for OpenAI / Gemini"></label>
+    <label id="apiKeyWrap">API key <input id="setApiKey" type="password" placeholder="only needed for Claude / OpenAI / Gemini"></label>
 
     <h3>🗃 Data</h3>
     <div class="row-gap">
