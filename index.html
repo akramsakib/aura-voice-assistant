@@ -97,18 +97,21 @@
     <label>Wake word <input id="setWakeWord" type="text" placeholder="aura"></label>
 
     <h3>🧠 AI brain</h3>
-    <p class="hint">AURA ships with a <b>free cloud brain — no API key needed, ever</b>. For guaranteed reliability you can optionally plug in your own key. Keys are stored <b>only in this browser</b>.</p>
+    <p class="hint"><b>Auto mode (default)</b> picks the best brain you have: <b>Gemini → Claude → GPT → free cloud</b>. Paste any keys below — a <b>free Gemini key</b> (2 min, no credit card at <b>aistudio.google.com/apikey</b>) gives AURA an Astra-class brain with vision. Keys stay <b>only in this browser</b>.</p>
     <label>Provider
       <select id="setProvider">
-        <option value="free">✨ Built-in free brain — no key needed (default)</option>
-        <option value="puter">☁️ Free cloud brain (Puter) — no key needed</option>
-        <option value="claude">Claude — my own key (Sonnet · vision ✓)</option>
-        <option value="openai">OpenAI — my own key (gpt-4o-mini · vision ✓)</option>
-        <option value="gemini">Google Gemini — my own key (2.0 Flash · vision ✓)</option>
+        <option value="auto">🚀 Auto — best available brain (default)</option>
+        <option value="free">✨ Free cloud brain only — no key</option>
+        <option value="puter">☁️ Free cloud brain (Puter) — no key</option>
+        <option value="gemini">Google Gemini only — my key (Astra-class · vision ✓)</option>
+        <option value="claude">Claude only — my key (Sonnet · vision ✓)</option>
+        <option value="openai">OpenAI only — my key (gpt-4o-mini · vision ✓)</option>
         <option value="none">Off — built-in skills only</option>
       </select>
     </label>
-    <label id="apiKeyWrap">API key <input id="setApiKey" type="password" placeholder="only needed for Claude / OpenAI / Gemini"></label>
+    <label>Gemini key <b class="keytag">free tier ✨</b><input id="setKeyGemini" type="password" placeholder="get free at aistudio.google.com/apikey"></label>
+    <label>Claude key<input id="setKeyClaude" type="password" placeholder="sk-ant-… (console.anthropic.com)"></label>
+    <label>OpenAI key<input id="setKeyOpenai" type="password" placeholder="sk-… (platform.openai.com)"></label>
 
     <h3>🗃 Data</h3>
     <div class="row-gap">

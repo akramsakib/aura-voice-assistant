@@ -70,11 +70,32 @@ If any built-in skill can't handle a phrase, the AI brain replies with a short,
 speakable answer and remembers the conversation context. If both free providers
 are momentarily unreachable, AURA degrades gracefully to a Google search link.
 
-**Optional — maximum reliability & power:** open ⚙ Settings → **AI brain** and
-plug in your own **Claude** (Sonnet · vision ✓), **OpenAI** (`gpt-4o-mini` ·
-vision ✓), or **Google Gemini** (`2.0 Flash` · vision ✓) key. Keys are stored
-**only in your browser's localStorage** and are sent directly from your browser
-to the provider.
+**🚀 Auto-Brain mode (default)** — paste any keys in ⚙ Settings and AURA
+automatically routes every question through the best model you have:
+
+**Gemini → Claude → GPT-4o-mini → free cloud chain**
+
+Each failure silently falls to the next brain — AURA never goes quiet.
+
+### Want the *exact same* brain as Astra or Claude? Here's how it actually works
+
+Astra **is** Gemini. Claude **is** Anthropic's API model. Both are gated services —
+the only way to get identical intelligence/speed is their official APIs, and the
+good news is **Google gives a free tier**:
+
+1. Go to **aistudio.google.com/apikey** → sign in → **Create API key** (2 min, no credit card)
+2. Paste it into ⚙ Settings → **Gemini key**. Done.
+
+You now have an **Astra-class brain** (Gemini 3.8 Flash — ~1,500 free requests/day,
+vision included, same model ID paid users get). Add a **Claude key**
+(console.anthropic.com) and/or an **OpenAI key** and Auto mode routes between all
+three — closest possible thing to "Astra and Claude combined."
+
+⚠️ Free-tier trade-off: Google may use free-tier inputs to improve its models —
+keep sensitive questions off it, or use a paid key.
+
+**Zero-key mode still works**: with no keys at all, Auto falls back to the free
+cloud chain (Pollinations → Puter Claude-class models), so AURA always answers.
 
 ## 👀 Vision
 
@@ -82,8 +103,9 @@ Tap 📷 or say **“take a photo”** → snap with your camera (or upload any 
 → ask anything about it: *“what am I holding?”*, *“read this label”*,
 *“translate what's on this sign”*, *“is this plant healthy?”* …
 
-Guaranteed eyes with any own key (Claude / GPT-4o-mini / Gemini Flash — all
-vision-capable); the free no-key path tries Puter's vision models automatically.
+Vision uses the same Auto-Brain routing — with a free Gemini key it runs on the
+Astra-class multimodal stack; Claude / GPT keys work too; the free no-key path
+tries Puter's vision models automatically.
 
 ## 🗣 Continuous conversation
 

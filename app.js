@@ -24,9 +24,16 @@ const settings = Object.assign({
   voiceURI: '', rate: 1.0, pitch: 1.0,
   handsFree: false, muted: false,
   wakeRequired: false, wakeWord: 'aura',
-  provider: 'free', apiKey: ''
+  provider: 'auto', apiKey: '', apiKeys: {}
 }, store.get('settings', {}));
+/* migrate old single-key storage into per-provider slots */
+if (!settings.apiKeys || typeof settings.apiKeys !== 'object') settings.apiKeys = {};
+if (settings.apiKey && ['gemini', 'claude', 'openai'].includes(settings.provider) && !settings.apiKeys[settings.provider]) {
+  settings.apiKeys[settings.provider] = settings.apiKey;
+}
 const saveSettings = () => store.set('settings', settings);
+/* key lookup: per-provider slot, falling back to legacy single key */
+function keyFor(p) { return (settings.apiKeys && settings.apiKeys[p]) || (settings.provider === p ? settings.apiKey : '') || ''; }
 let notes = store.get('notes', []);
 let todoList = store.get('list', []);
 let timers = [];                       // {id,label,endsAt}
@@ -331,58 +338,82 @@ function loadPuter() {
   return loadPuter._p;
 }
 
+/* ---- per-provider brains: each returns reply text or null ---- */
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+
+async function callGemini(persona) {
+  const key = keyFor('gemini'); if (!key) return null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({ system_instruction: { parts: [{ text: persona }] }, contents: history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: String(h.content) }] })), generationConfig: { maxOutputTokens: 220 } })
+      }, 22000);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const out = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
+      if (out && String(out).trim()) return String(out).trim();
+    } catch (e) {}
+  }
+  return null;
+}
+async function callClaude(persona) {
+  const key = keyFor('claude'); if (!key) return null;
+  try {
+    const r = await fetchT('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 260, system: persona, messages: history })
+    }, 25000);
+    const j = await r.json();
+    const out = j.content && j.content[0] && j.content[0].text;
+    if (out && String(out).trim()) return String(out).trim();
+  } catch (e) {}
+  return null;
+}
+async function callOpenAI(persona) {
+  const key = keyFor('openai'); if (!key) return null;
+  try {
+    const r = await fetchT('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: persona }, ...history], max_tokens: 220 })
+    }, 22000);
+    const j = await r.json();
+    const out = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+    if (out && String(out).trim()) return String(out).trim();
+  } catch (e) {}
+  return null;
+}
+async function callPuter(persona) {
+  try {
+    await loadPuter();
+    const race = p => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('puter timeout')), 30000))]);
+    const out = textFrom(await race(window.puter.ai.chat([{ role: 'system', content: persona }, ...history])));
+    if (out) return out;
+  } catch (e) {}
+  return null;
+}
+async function callFreeChain(persona) { return (await askFreeBrain(persona)) || (await callPuter(persona)); }
+
+/* Auto-brain: routes through the best available models automatically */
+const BRAIN_CHAINS = {
+  auto: [callGemini, callClaude, callOpenAI, callFreeChain],
+  gemini: [callGemini], claude: [callClaude], openai: [callOpenAI],
+  free: [callFreeChain], puter: [callPuter], none: []
+};
+
 async function askAI(text) {
   const persona = `You are ${settings.name}, a warm, witty, hyper-capable voice personal assistant${settings.user ? ' for a user named ' + settings.user : ''}. Replies are spoken aloud, so keep answers concise (1-3 short sentences). Write plain prose only - no markdown, no bullet lists, no emojis unless playful. Today is ${new Date().toDateString()}.`;
   history.push({ role: 'user', content: text });
   if (history.length > 14) history.splice(0, history.length - 14);
-  try {
-    if (settings.provider === 'free') {
-      /* try keyless brain first, then Puter as automatic backup */
-      let out = await askFreeBrain(persona);
-      if (!out) {
-        try {
-          await loadPuter();
-          const resp = await window.puter.ai.chat([{ role: 'system', content: persona }, ...history]);
-          out = typeof resp === 'string' ? resp : (resp && resp.message && (resp.message.content || resp.message.text)) || (resp && resp.text) || '';
-          out = String(out).trim();
-        } catch (e2) {}
-      }
+  for (const fn of BRAIN_CHAINS[settings.provider] || []) {
+    try {
+      const out = await fn(persona);
       if (out) { history.push({ role: 'assistant', content: out }); return out; }
-      return null;
-    }
-    if (settings.provider === 'puter') {
-      await loadPuter();
-      const resp = await window.puter.ai.chat([{ role: 'system', content: persona }, ...history]);
-      const out = (typeof resp === 'string' ? resp : (resp && resp.message && (resp.message.content || resp.message.text)) || (resp && resp.text) || '').toString().trim();
-      if (out) { history.push({ role: 'assistant', content: out }); return out; }
-    } else if (settings.provider === 'openai') {
-      const r = await fetchT('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.apiKey },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: persona }, ...history], max_tokens: 220 })
-      }, 20000);
-      const j = await r.json();
-      const out = j.choices && j.choices[0] && j.choices[0].message.content;
-      if (out) { history.push({ role: 'assistant', content: out }); return out; }
-    } else if (settings.provider === 'claude') {
-      const r = await fetchT('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 260, system: persona, messages: history })
-      }, 25000);
-      const j = await r.json();
-      const out = j.content && j.content[0] && j.content[0].text;
-      if (out) { history.push({ role: 'assistant', content: out }); return out; }
-    } else if (settings.provider === 'gemini') {
-      const r = await fetchT('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(settings.apiKey), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system_instruction: { parts: [{ text: persona }] }, contents: history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: h.content }] })) })
-      }, 20000);
-      const j = await r.json();
-      const out = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
-      if (out) { history.push({ role: 'assistant', content: out }); return out; }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
   return null;
 }
 
@@ -443,47 +474,72 @@ function handleUpload(file) {
 }
 
 /* Ask the brain about an image — tries own-key vision models, then free Puter vision */
+/* per-provider vision (each returns answer text or null) */
+async function visionGemini(dataUrl, b64, q, vp) {
+  const key = keyFor('gemini'); if (!key) return null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({ contents: [{ parts: [{ text: vp + ' Question: ' + q }, { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }], generationConfig: { maxOutputTokens: 280 } })
+      }, 30000);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const out = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
+      if (out && String(out).trim()) return String(out).trim();
+    } catch (e) {}
+  }
+  return null;
+}
+async function visionClaude(dataUrl, b64, q, vp) {
+  const key = keyFor('claude'); if (!key) return null;
+  try {
+    const r = await (await fetchT('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 280, system: vp, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: q }] }] })
+    }, 30000)).json();
+    const out = r.content && r.content[0] && r.content[0].text;
+    if (out && String(out).trim()) return String(out).trim();
+  } catch (e) {}
+  return null;
+}
+async function visionOpenAI(dataUrl, b64, q, vp) {
+  const key = keyFor('openai'); if (!key) return null;
+  try {
+    const r = await (await fetchT('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: vp }, { role: 'user', content: [{ type: 'text', text: q }, { type: 'image_url', image_url: { url: dataUrl } }] }], max_tokens: 220 })
+    }, 30000)).json();
+    const out = r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content;
+    if (out && String(out).trim()) return String(out).trim();
+  } catch (e) {}
+  return null;
+}
+async function visionPuter(dataUrl, b64, q, vp) {
+  try {
+    await loadPuter();
+    const race = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('vision timeout')), 35000))]);
+    for (const opts of [{ model: 'claude-sonnet-4' }, { model: 'gpt-4o-mini' }, {}]) {
+      try { const out = textFrom(await race(window.puter.ai.chat(vp + '\nQuestion: ' + q, dataUrl, opts))); if (out) return out; } catch (e2) {}
+    }
+  } catch (e) {}
+  return null;
+}
+
+/* Ask the brain about an image — auto-routes through the best available vision model */
 async function visionAnswer(dataUrl, question) {
   const b64 = dataUrl.split(',')[1] || '';
   const q = (question || 'Describe this image in detail.').trim();
   const vp = `You are ${settings.name}, a witty voice assistant answering about a photo. Describe what you actually see and answer the question directly. 1-3 short sentences, plain prose, spoken aloud — no markdown, no bullet points.`;
-  try {
-    if (settings.provider === 'claude' && settings.apiKey) {
-      const r = await (await fetchT('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 280, system: vp, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: q }] }] })
-      }, 30000)).json();
-      const out = r.content && r.content[0] && r.content[0].text;
-      if (out) return out;
-    }
-    if (settings.provider === 'openai' && settings.apiKey) {
-      const r = await (await fetchT('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.apiKey },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: vp }, { role: 'user', content: [{ type: 'text', text: q }, { type: 'image_url', image_url: { url: dataUrl } }] }], max_tokens: 220 })
-      }, 30000)).json();
-      const out = r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content;
-      if (out) return out;
-    }
-    if (settings.provider === 'gemini' && settings.apiKey) {
-      const r = await (await fetchT('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + encodeURIComponent(settings.apiKey), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: vp + ' Question: ' + q }, { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }] })
-      }, 30000)).json();
-      const out = r.candidates && r.candidates[0] && r.candidates[0].content && r.candidates[0].content.parts[0] && r.candidates[0].content.parts[0].text;
-      if (out) return out;
-    }
-  } catch (e) {}
-  /* free no-key vision via Puter */
-  if (settings.provider === 'free' || settings.provider === 'puter') {
-    try {
-      await loadPuter();
-      const race = (p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('vision timeout')), 35000))]);
-      for (const opts of [{ model: 'claude-sonnet-4' }, { model: 'gpt-4o-mini' }, {}]) {
-        try { const out = textFrom(await race(window.puter.ai.chat(vp + '\nQuestion: ' + q, dataUrl, opts))); if (out) return out; } catch (e2) {}
-      }
-    } catch (e) {}
+  const chain = {
+    auto: [visionGemini, visionClaude, visionOpenAI, visionPuter],
+    gemini: [visionGemini], claude: [visionClaude], openai: [visionOpenAI],
+    free: [visionPuter], puter: [visionPuter], none: []
+  }[settings.provider] || [];
+  for (const fn of chain) {
+    try { const out = await fn(dataUrl, b64, q, vp); if (out) return out; } catch (e) {}
   }
   return null;
 }
@@ -496,7 +552,7 @@ async function askAboutImage(question) {
   setState('thinking');
   const ans = await visionAnswer(dataUrl, q);
   if (ans) respond(ans);
-  else respond("Vision is offline right now — the free vision service didn't respond. Add a Claude, OpenAI or Gemini key in ⚙ Settings for guaranteed eyes, or try again in a moment.");
+  else respond("Vision is offline right now — the free vision service didn't respond. Grab a free Gemini key at aistudio dot google dot com slash apikey and paste it in ⚙ Settings for Astra-class eyes, or try again in a moment.");
 }
 
 /* ============================================================
@@ -791,7 +847,7 @@ async function handle(raw) {
 }
 
 async function aiOrSuggest(original, prefix) {
-  const brainOn = settings.provider === 'free' || settings.provider === 'puter' || (settings.provider !== 'none' && settings.apiKey);
+  const brainOn = ['auto', 'free', 'puter'].includes(settings.provider) || !!keyFor(settings.provider);
   if (brainOn) {
     setState('thinking');
     const ans = await askAI(original);
@@ -912,9 +968,9 @@ function bindSettings() {
   $('#setRate').value = settings.rate; $('#rateVal').textContent = settings.rate.toFixed(2) + 'x';
   $('#setPitch').value = settings.pitch; $('#pitchVal').textContent = settings.pitch.toFixed(2);
   $('#setWake').checked = settings.wakeRequired; $('#setWakeWord').value = settings.wakeWord;
-  $('#setProvider').value = settings.provider; $('#setApiKey').value = settings.apiKey;
-  const syncKeyField = () => { const w = $('#apiKeyWrap'); if (w) w.style.display = (settings.provider === 'openai' || settings.provider === 'gemini') ? 'flex' : 'none'; };
-  syncKeyField();
+  $('#setProvider').value = settings.provider;
+  const bindKey = (id, prov) => { const el = $(id); if (!el) return; el.value = keyFor(prov); el.oninput = e => { settings.apiKeys[prov] = e.target.value.trim(); saveSettings(); }; };
+  bindKey('#setKeyGemini', 'gemini'); bindKey('#setKeyClaude', 'claude'); bindKey('#setKeyOpenai', 'openai');
   $('#setName').oninput = e => { settings.name = e.target.value.trim() || 'AURA'; saveSettings(); setState(micOn ? 'listening' : 'idle'); };
   $('#setUser').oninput = e => { settings.user = e.target.value.trim(); saveSettings(); };
   $('#setCity').oninput = e => { settings.city = e.target.value.trim() || 'Pasir Gudang'; saveSettings(); };
@@ -923,8 +979,7 @@ function bindSettings() {
   $('#setPitch').oninput = e => { settings.pitch = +e.target.value; $('#pitchVal').textContent = settings.pitch.toFixed(2); saveSettings(); };
   $('#setWake').onchange = e => { settings.wakeRequired = e.target.checked; saveSettings(); };
   $('#setWakeWord').oninput = e => { settings.wakeWord = e.target.value.trim().toLowerCase() || 'aura'; saveSettings(); };
-  $('#setProvider').onchange = e => { settings.provider = e.target.value; saveSettings(); syncKeyField(); };
-  $('#setApiKey').oninput = e => { settings.apiKey = e.target.value.trim(); saveSettings(); };
+  $('#setProvider').onchange = e => { settings.provider = e.target.value; saveSettings(); };
   $('#exportNotes').onclick = exportNotes;
   $('#wipeData').onclick = () => {
     if (confirm('Erase all AURA data (notes, list, reminders, settings) on this device?')) {
