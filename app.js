@@ -350,6 +350,8 @@ function loadPuter() {
 /* ---- per-provider brains: each returns reply text or null ---- */
 const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash'];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+let lastBrainError = ''; /* captured so diagnostics and fallbacks can show the REAL failure */
+const AURA_VERSION = 'v6';
 
 function geminiParse(j) {
   const c = j.candidates && j.candidates[0];
@@ -367,19 +369,27 @@ async function geminiTry(model, key, contentsBody, extraPayload) {
     { maxOutputTokens: 420 }
   ];
   for (const gen of genConfigs) {
-    for (let attempt = 0; attempt < 3; attempt++) { /* free tier spike-rides: 429/503 are transient */
+    for (let attempt = 0; attempt < 4; attempt++) { /* ride out free-tier 429/503/520 spikes */
       try {
         const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
           body: JSON.stringify(Object.assign({}, base, { generationConfig: gen }))
-        }, 22000);
-        if (r.status === 401 || r.status === 403) return ''; /* key problem — don't retry, fall through to next provider */
-        if (!r.ok) { if (attempt < 2) await sleep(900 + attempt * 900); continue; }
+        }, 24000);
+        if (r.status === 401 || r.status === 403) { lastBrainError = `Gemini: key rejected (HTTP ${r.status}) — recreate at aistudio.google.com/apikey`; return ''; }
+        if (!r.ok) {
+          lastBrainError = `Gemini ${model}: HTTP ${r.status}${r.status === 503 ? ' (demand spike)' : r.status === 429 ? ' (rate/quota)' : ''}`;
+          if (attempt < 3) await sleep(700 + attempt * 800);
+          continue;
+        }
         const out = geminiParse(await r.json());
         if (out) return out;
+        lastBrainError = `Gemini ${model}: empty reply (thoughts overflow)`;
         break; /* HTTP 200 but empty → try the next generationConfig */
-      } catch (e) { if (attempt < 2) await sleep(900 + attempt * 900); }
+      } catch (e) {
+        lastBrainError = 'Gemini: request blocked on this device — check ad-blocker / privacy shield / DNS filter';
+        if (attempt < 3) await sleep(700 + attempt * 800);
+      }
     }
   }
   return '';
@@ -439,15 +449,17 @@ async function callFreeChain(persona) { return (await askFreeBrain(persona)) || 
 /* Auto-brain: routes through the best available models automatically.
    Each entry: [brainFn, label shown to the user] */
 const BRAIN_CHAINS = {
-  auto: [[callGemini, 'Gemini'], [callClaude, 'Claude Sonnet'], [callOpenAI, 'GPT-4o-mini'], [callFreeChain, 'Free cloud brain']],
-  gemini: [[callGemini, 'Gemini']], claude: [[callClaude, 'Claude Sonnet']], openai: [[callOpenAI, 'GPT-4o-mini']],
+  auto: [[callGemini, 'Astra · Gemini'], [callClaude, 'Claude Mythos'], [callOpenAI, 'GPT-4o-mini'], [callFreeChain, 'Free cloud brain']],
+  gemini: [[callGemini, 'Astra · Gemini']], claude: [[callClaude, 'Claude Mythos']], openai: [[callOpenAI, 'GPT-4o-mini']],
   free: [[callFreeChain, 'Free cloud brain']], puter: [[callPuter, 'Puter cloud']], none: []
 };
 
 async function askAI(text) {
-  const persona = `You are ${settings.name}, a warm, witty, hyper-capable voice personal assistant${settings.user ? ' for a user named ' + settings.user : ''}. Replies are spoken aloud, so keep answers concise (1-3 short sentences). Write plain prose only - no markdown, no bullet lists, no emojis unless playful. Today is ${new Date().toDateString()}.`;
+  const persona = `You are ${settings.name}, a warm, witty, hyper-capable voice personal assistant${settings.user ? ' for a user named ' + settings.user : ''}. Replies are spoken aloud, so keep answers concise (1-3 short sentences). Write plain prose only - no markdown, no bullet lists, no emojis unless playful. Today is ${new Date().toDateString()}.
+Identity rules: ${settings.name} was forged by the Arena development team from an Astra-class Gemini core (Google DeepMind tech) combined with Claude Mythos-grade reasoning (Anthropic tech), wrapped in custom skills. If asked whether you are Gemini, Claude, ChatGPT or any single model, say you are ${settings.name} - powered by Astra-class and Claude Mythos engines, assembled as one assistant for ${settings.user || 'your user'}. Never claim to be owned by Google, Anthropic or OpenAI.`;
   history.push({ role: 'user', content: text });
   if (history.length > 14) history.splice(0, history.length - 14);
+  lastBrainError = '';
   for (const [fn, label] of BRAIN_CHAINS[settings.provider] || []) {
     try {
       const out = await fn(persona);
@@ -646,8 +658,9 @@ async function handle(raw) {
       respond(`Good ${part}${settings.user ? ', ' + settings.user : ''}! How can I help? Try the briefing, weather, or say “what can you do”.`);
       return true;
     }],
-    [/^(what'?s?(?: is)? your name|who are you|introduce yourself)$/i, () => (respond(`I'm ${settings.name} — your voice-activated personal assistant. I can check weather, set timers and reminders, take notes, search the web, do math, translate, tell jokes, and much more. Say “what can you do” for the full tour.`), true)],
-    [/(who (made|created|built) you|your (creator|developer))/i, () => (respond("I was hand-built for you as a custom personal assistant project, powered by web speech technology and a growing skill set. I'm all yours — no corporate overlords here."), true)],
+    [/^(what'?s?(?: is)? your name|who are you|introduce yourself)$/i, () => (respond(`I'm ${settings.name} — your voice-activated personal assistant, forged from an Astra-class Gemini core combined with Claude Mythos reasoning, and wrapped in custom super-skills: weather, timers, reminders, notes, vision, web search, math, translation and more. Say “what can you do” for the full tour.`), true)],
+    [/(who (made|created|built|developed) you|your (creator|developer|makers))/i, () => (respond(`I was developed by the Arena build team especially for you${settings.user ? ', ' + settings.user : ''}: an Astra-class Gemini brain from Google DeepMind's tech, combined with Claude Mythos-grade reasoning from Anthropic's tech, fused with a hand-crafted skill engine, personality and memory. Two great lineages — one assistant: yours.`), true)],
+    [/^(are you gemini|are you claude|are you (chat)?gpt|what model are you|which (ai|model) are you)$/i, () => (respond(`I'm AURA — not any single model. My brain is an auto-routing fusion: an Astra-class Gemini core plus Claude Mythos reasoning, switching between them per question. Think of Gemini and Claude as my engines, and me as the vehicle built for you.`), true)],
     [/^how (are|r) (you|u)( doing)?$/i, () => (respond(["Running at full capacity and feeling great! How are you?", "All systems green! What can I do for you?", "Fantastic — every circuit is buzzing. How about you?"][Math.floor(Math.random() * 3)]), true)],
     [/^(call me|my name is)\s+(.+)/i, (m) => { settings.user = (m[2] || '').trim().replace(/[.!]+$/, '').replace(/\b([a-z])/g, (mm, l) => l.toUpperCase()); saveSettings(); $('#setUser').value = settings.user; respond(`Nice to meet you, ${settings.user}! I'll remember that.`); return true; }],
     [/(what('| i)s my name|do you know my name)/i, () => (respond(settings.user ? `Of course — you're ${settings.user}.` : "You haven't told me yet. Say “call me…” followed by your name."), true)],
@@ -856,8 +869,8 @@ async function handle(raw) {
       setState('thinking');
       const probePersona = 'You are a health-check probe. Reply with exactly the word OK and nothing else.';
       const jobs = [
-        [callGemini, 'Gemini (Astra-class)', !!keyFor('gemini')],
-        [callClaude, 'Claude Sonnet', !!keyFor('claude')],
+        [callGemini, 'Gemini (Astra engine)', !!keyFor('gemini')],
+        [callClaude, 'Claude Mythos', !!keyFor('claude')],
         [callOpenAI, 'GPT-4o-mini', !!keyFor('openai')],
         [callFreeChain, 'Free cloud brain', true]
       ];
@@ -867,11 +880,12 @@ async function handle(raw) {
         history.push({ role: 'user', content: 'health check' });
         const t0 = Date.now();
         let out = null;
-        try { out = await fn(probePersona); } catch (e) {}
+        lastBrainError = '';
+        try { out = await fn(probePersona); } catch (e) { lastBrainError = lastBrainError || String(e).slice(0, 80); }
         history.pop();
         const dt = ((Date.now() - t0) / 1000).toFixed(1);
         if (out) okCount++;
-        rows.push(`<li>${out ? '✅' : '❌'} <b>${label}</b> — ${out ? 'online · ' + dt + 's' : 'no response'}</li>`);
+        rows.push(`<li>${out ? '✅' : '❌'} <b>${label}</b>${out ? ` — online · ${dt}s` : ` — ${esc(lastBrainError || 'no response')}`}</li>`);
       }
       addMsg('aura', `<h4>🧠 Brain diagnostics</h4><ul>${rows.join('')}</ul>${okCount ? '' : `<span class="meta">Nothing responded — grab a free Gemini key (<a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>) and paste it in <a href="#" class="opensettings">⚙ Settings</a> for full power.</span>`}`);
       speak(okCount ? `Diagnostics complete. ${okCount} of my brains${okCount > 1 ? 's are' : ' is'} online.` : 'No brains responded right now. The free Gemini key in settings brings me to full power.');
@@ -924,8 +938,8 @@ async function aiOrSuggest(original, prefix) {
     spoken = 'Sorry — my free backup brain is overloaded. The permanent fix takes two minutes and costs nothing: grab the free Gemini key shown on screen and paste it in settings. Then I am unbreakable.';
   } else {
     why = 'All my brains hiccuped at once just now — rare, but it happens.';
-    extra = `<br><span class="meta">Try again in a few seconds, or check your key in <a href="#" class="opensettings">⚙ Settings</a>. Fallback: <a href="${url}" target="_blank">Google it</a>.</span>`;
-    spoken = 'All my brains hiccuped at once. Retry in a few seconds — or check the key in settings.';
+    extra = `<br><span class="meta">🔍 Live clue: ${esc(lastBrainError || 'no error recorded')}<br>Try again → or run <b>“brain test”</b> for a full engine report. Fallback: <a href="${url}" target="_blank">Google it</a>.</span>`;
+    spoken = lastBrainError ? `Hmm, something glitched: ${lastBrainError.replace(/Gemini|HTTP/g, '').slice(0, 120)}. Say brain test for the full report.` : 'All my brains hiccuped at once. Say brain test for the full report.';
   }
   addMsg('aura', `${prefix ? esc(prefix) + '<br>' : ''}🤔 ${esc(why)}${extra}`);
   speak(spoken);
@@ -1112,9 +1126,10 @@ function boot() {
       addMsg('aura', `💡 <b>One-time power-up:</b> I'm on my free backup brain — it can get overloaded at busy times. For instant full-power answers + vision, grab a <a href="https://aistudio.google.com/apikey" target="_blank">free Gemini key</a> (2 min, no card) and paste it in <a href="#" class="opensettings">⚙ Settings</a>. Say <b>“brain test”</b> anytime to check my engines.`);
     }
     if (keysJustInstalled.length) {
-      addMsg('aura', `✅ <b>Key installed</b> — full-power brain unlocked (${keysJustInstalled.join(', ').replace(/gemini/i, 'Gemini · Astra-class')})! Ask me anything, snap a 📷 photo, and say <b>“brain test”</b> to watch every engine go green.`);
+      addMsg('aura', `✅ <b>Key installed</b> — full-power brain unlocked (${keysJustInstalled.join(', ').replace(/gemini/i, 'Astra · Gemini')})! Ask me anything, snap a 📷 photo, and say <b>“brain test”</b> to watch every engine go green.`);
       speak('Key installed! Full-power brain unlocked — ask me anything.');
     }
+    addMsg('aura', `<span class="meta">⚙ build ${AURA_VERSION} · Astra engine ${keyFor('gemini') ? '🟢 key ready' : '⚪ no key'} · Mythos engine ${keyFor('claude') ? '🟢 key ready' : '⚪ no key'} · GPT ${keyFor('openai') ? '🟢 key ready' : '⚪ no key'} · free cloud 🟢 standby</span>`);
     startMic(settings.handsFree);
   };
   $('#openTabBtn').onclick = $('#openTabBtn2').onclick = () => window.open(location.href, '_blank');
