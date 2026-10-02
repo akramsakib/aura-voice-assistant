@@ -302,14 +302,23 @@ function textFrom(resp) {
   return '';
 }
 
-/* Free brain #1: keyless anonymous inference (Pollinations GET API) */
-async function askFreeBrain(persona) {
+/* shared flattened prompt for prompt-string providers */
+function flatPrompt(persona) {
   const convo = history.slice(-8).map(h => (h.role === 'user' ? 'User' : settings.name) + ': ' + String(h.content).slice(0, 400)).join('\n');
-  const prompt = persona + '\n\nConversation so far:\n' + convo + '\n' + settings.name + ':';
-  const enc = encodeURIComponent(prompt);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  return persona + '\n\nConversation so far:\n' + convo + '\n' + settings.name + ':';
+}
+
+/* Free brain #1: keyless anonymous inference (Pollinations GET API) — multi-shape retries */
+async function askFreeBrain(persona) {
+  const enc = encodeURIComponent(flatPrompt(persona));
+  const shapes = [
+    `https://text.pollinations.ai/${enc}?model=openai&referrer=aura-voice-assistant`,
+    `https://text.pollinations.ai/${enc}?model=openai`,
+    `https://text.pollinations.ai/${enc}`
+  ];
+  for (const url of shapes) {
     try {
-      const r = await fetchT(`https://text.pollinations.ai/${enc}?model=openai&referrer=aura-voice-assistant`, {}, 30000);
+      const r = await fetchT(url, {}, 40000);
       if (!r.ok) continue;
       let txt = (await r.text()).trim();
       if (!txt || txt.startsWith('{') || txt.startsWith('<')) continue;
@@ -390,28 +399,32 @@ async function callPuter(persona) {
   try {
     await loadPuter();
     const race = p => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('puter timeout')), 30000))]);
-    const out = textFrom(await race(window.puter.ai.chat([{ role: 'system', content: persona }, ...history])));
+    const out = textFrom(await race(window.puter.ai.chat(flatPrompt(persona))));
     if (out) return out;
+    /* some SDK builds want message objects instead of a string */
+    const out2 = textFrom(await race(window.puter.ai.chat([{ role: 'system', content: persona }, ...history])));
+    if (out2) return out2;
   } catch (e) {}
   return null;
 }
 async function callFreeChain(persona) { return (await askFreeBrain(persona)) || (await callPuter(persona)); }
 
-/* Auto-brain: routes through the best available models automatically */
+/* Auto-brain: routes through the best available models automatically.
+   Each entry: [brainFn, label shown to the user] */
 const BRAIN_CHAINS = {
-  auto: [callGemini, callClaude, callOpenAI, callFreeChain],
-  gemini: [callGemini], claude: [callClaude], openai: [callOpenAI],
-  free: [callFreeChain], puter: [callPuter], none: []
+  auto: [[callGemini, 'Gemini'], [callClaude, 'Claude Sonnet'], [callOpenAI, 'GPT-4o-mini'], [callFreeChain, 'Free cloud brain']],
+  gemini: [[callGemini, 'Gemini']], claude: [[callClaude, 'Claude Sonnet']], openai: [[callOpenAI, 'GPT-4o-mini']],
+  free: [[callFreeChain, 'Free cloud brain']], puter: [[callPuter, 'Puter cloud']], none: []
 };
 
 async function askAI(text) {
   const persona = `You are ${settings.name}, a warm, witty, hyper-capable voice personal assistant${settings.user ? ' for a user named ' + settings.user : ''}. Replies are spoken aloud, so keep answers concise (1-3 short sentences). Write plain prose only - no markdown, no bullet lists, no emojis unless playful. Today is ${new Date().toDateString()}.`;
   history.push({ role: 'user', content: text });
   if (history.length > 14) history.splice(0, history.length - 14);
-  for (const fn of BRAIN_CHAINS[settings.provider] || []) {
+  for (const [fn, label] of BRAIN_CHAINS[settings.provider] || []) {
     try {
       const out = await fn(persona);
-      if (out) { history.push({ role: 'assistant', content: out }); return out; }
+      if (out) { history.push({ role: 'assistant', content: out }); return { text: out, src: label }; }
     } catch (e) {}
   }
   return null;
@@ -715,7 +728,7 @@ async function handle(raw) {
     [/clear (the |my )?(shopping |to.?do )?list/i, () => { todoList = []; store.set('list', todoList); respond('List cleared.'); return true; }],
 
     /* ---- weather ---- */
-    [/(will it rain|rain(ing)?)( today)?( in ([a-z ,']+))?/i, async (m) => {
+    [/^(will it rain|is it (going to )?rain(ing)?)( today| later)?( in ([a-z ,']+))?$/i, async (m) => {
       try {
         const r = await weatherFor(m[5] || settings.city, true);
         const wet = /rain|drizzle|shower|thunder/.test(r.say);
@@ -819,6 +832,31 @@ async function handle(raw) {
       catch (e) { respond("I can't read battery info on this device/browser."); }
       return true;
     }],
+    [/^(brain test|test (your|the) brain|brain status|diagnostics|run diagnostics|check brain)$/i, async () => {
+      setState('thinking');
+      const probePersona = 'You are a health-check probe. Reply with exactly the word OK and nothing else.';
+      const jobs = [
+        [callGemini, 'Gemini (Astra-class)', !!keyFor('gemini')],
+        [callClaude, 'Claude Sonnet', !!keyFor('claude')],
+        [callOpenAI, 'GPT-4o-mini', !!keyFor('openai')],
+        [callFreeChain, 'Free cloud brain', true]
+      ];
+      const rows = []; let okCount = 0;
+      for (const [fn, label, ready] of jobs) {
+        if (!ready) { rows.push(`<li>⏭ <b>${label}</b> — skipped (no key)</li>`); continue; }
+        history.push({ role: 'user', content: 'health check' });
+        const t0 = Date.now();
+        let out = null;
+        try { out = await fn(probePersona); } catch (e) {}
+        history.pop();
+        const dt = ((Date.now() - t0) / 1000).toFixed(1);
+        if (out) okCount++;
+        rows.push(`<li>${out ? '✅' : '❌'} <b>${label}</b> — ${out ? 'online · ' + dt + 's' : 'no response'}</li>`);
+      }
+      addMsg('aura', `<h4>🧠 Brain diagnostics</h4><ul>${rows.join('')}</ul>${okCount ? '' : `<span class="meta">Nothing responded — grab a free Gemini key (<a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>) and paste it in <a href="#" class="opensettings">⚙ Settings</a> for full power.</span>`}`);
+      speak(okCount ? `Diagnostics complete. ${okCount} of my brains${okCount > 1 ? 's are' : ' is'} online.` : 'No brains responded right now. The free Gemini key in settings brings me to full power.');
+      return true;
+    }],
     [/speak (faster|slower)/i, (m) => { settings.rate = Math.min(1.6, Math.max(0.6, settings.rate + (m[1] === 'faster' ? 0.15 : -0.15))); saveSettings(); respond(`Speech speed is now ${settings.rate.toFixed(2)}x.`); return true; }],
     [/change (your )?voice|voice settings/i, () => { openSettings(); respond('Opening voice settings — pick any voice you like from the dropdown.'); return true; }],
     [/(what can you do|help|commands|show commands|abilities|skills)/i, () => (showHelp(), true)]
@@ -851,15 +889,26 @@ async function aiOrSuggest(original, prefix) {
   if (brainOn) {
     setState('thinking');
     const ans = await askAI(original);
-    if (ans) { respond(ans); return; }
+    if (ans) { addMsg('aura', `${esc(ans.text)} <span class="brain-tag">🧠 ${esc(ans.src)}</span>`); speak(ans.text); return; }
   }
   const url = 'https://www.google.com/search?q=' + encodeURIComponent(original);
-  const why = brainOn
-    ? "My free cloud brain is resting right now — here's a search instead."
-    : (prefix ? prefix + ' ' : "I'm not sure about that one, but ") + 'I can search the web for it.';
-  const tip = brainOn ? '' : '<br><span class="meta">Tip: the free AI brain is on by default — or plug an OpenAI/Gemini key into ⚙ Settings for max reliability.</span>';
-  addMsg('aura', `${prefix && brainOn ? esc(prefix) + '<br>' : ''}🤔 ${esc(why)} <a href="${url}" target="_blank">search “${esc(original)}” on Google</a>${tip}`);
-  speak(why + ' Search results are a tap away.');
+  const hasKey = !!(keyFor('gemini') || keyFor('claude') || keyFor('openai'));
+  let why, extra = '', spoken;
+  if (!brainOn) {
+    why = "I'm not sure about that one, but I can search the web for it.";
+    extra = `<br><span class="meta">Tip: enable the AI brain in <a href="#" class="opensettings">⚙ Settings</a> for open-ended answers.</span>`;
+    spoken = why + ' Search results are a tap away.';
+  } else if (!hasKey) {
+    why = "My free backup brain is overloaded — the public AI services are up and down nonstop lately. Sorry about that.";
+    extra = `<br>⚡ <b>Permanent fix · 2 minutes · free:</b> <a href="https://aistudio.google.com/apikey" target="_blank">create your free Gemini key</a> (no credit card) → paste it in <a href="#" class="opensettings">⚙ Settings → Gemini key</a>. Then I run on the <b>same brain as Astra</b> — no more downtime, ever.<br><span class="meta">Meanwhile: <a href="${url}" target="_blank">Google search for “${esc(original)}”</a></span>`;
+    spoken = 'Sorry — my free backup brain is overloaded. The permanent fix takes two minutes and costs nothing: grab the free Gemini key shown on screen and paste it in settings. Then I am unbreakable.';
+  } else {
+    why = 'All my brains hiccuped at once just now — rare, but it happens.';
+    extra = `<br><span class="meta">Try again in a few seconds, or check your key in <a href="#" class="opensettings">⚙ Settings</a>. Fallback: <a href="${url}" target="_blank">Google it</a>.</span>`;
+    spoken = 'All my brains hiccuped at once. Retry in a few seconds — or check the key in settings.';
+  }
+  addMsg('aura', `${prefix ? esc(prefix) + '<br>' : ''}🤔 ${esc(why)}${extra}`);
+  speak(spoken);
 }
 
 function convertOrCurrency(n, from, to, soft) {
@@ -1007,6 +1056,10 @@ function boot() {
     const greet = `Good ${part}${settings.user ? ', ' + settings.user : ''}! ${settings.name} is online. Say “what can you do” or tap a chip below to get started.`;
     addMsg('aura', `👋 ${esc(greet)}`);
     speak(greet);
+    if (!store.get('welcomed', false) && !keyFor('gemini')) {
+      store.set('welcomed', true);
+      addMsg('aura', `💡 <b>One-time power-up:</b> I'm on my free backup brain — it can get overloaded at busy times. For instant full-power answers + vision, grab a <a href="https://aistudio.google.com/apikey" target="_blank">free Gemini key</a> (2 min, no card) and paste it in <a href="#" class="opensettings">⚙ Settings</a>. Say <b>“brain test”</b> anytime to check my engines.`);
+    }
     startMic(settings.handsFree);
   };
   $('#openTabBtn').onclick = $('#openTabBtn2').onclick = () => window.open(location.href, '_blank');
@@ -1036,6 +1089,10 @@ function boot() {
   $('#camModal').addEventListener('click', e => { if (e.target === $('#camModal')) closeCameraModal(); });
 
   $('#sendBtn').onclick = sendText;
+  $('#chat').addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('a.opensettings');
+    if (a) { e.preventDefault(); openSettings(); }
+  });
   $('#textInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
   document.querySelectorAll('.chip').forEach(c => c.onclick = () => { addMsg('user', esc(c.dataset.cmd)); setState('thinking'); setTimeout(() => handle(c.dataset.cmd).catch(() => respond('Something glitched. Try again?')), 10); });
   function sendText() {
