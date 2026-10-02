@@ -348,22 +348,49 @@ function loadPuter() {
 }
 
 /* ---- per-provider brains: each returns reply text or null ---- */
-const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash'];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function geminiParse(j) {
+  const c = j.candidates && j.candidates[0];
+  const parts = c && c.content && c.content.parts;
+  const text = parts && Array.isArray(parts) ? parts.map(p => p.text || '').join('').trim() : '';
+  return text || '';
+}
+
+/* call a Gemini model; thinking models can burn the whole output budget on
+   internal thoughts, so budget the thinking first, then retry plain. */
+async function geminiTry(model, key, contentsBody, extraPayload) {
+  const base = Object.assign({ contents: contentsBody }, extraPayload || {});
+  const genConfigs = [
+    { maxOutputTokens: 420, thinkingConfig: { thinkingBudget: 0 } },
+    { maxOutputTokens: 420 }
+  ];
+  for (const gen of genConfigs) {
+    for (let attempt = 0; attempt < 3; attempt++) { /* free tier spike-rides: 429/503 are transient */
+      try {
+        const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body: JSON.stringify(Object.assign({}, base, { generationConfig: gen }))
+        }, 22000);
+        if (r.status === 401 || r.status === 403) return ''; /* key problem — don't retry, fall through to next provider */
+        if (!r.ok) { if (attempt < 2) await sleep(900 + attempt * 900); continue; }
+        const out = geminiParse(await r.json());
+        if (out) return out;
+        break; /* HTTP 200 but empty → try the next generationConfig */
+      } catch (e) { if (attempt < 2) await sleep(900 + attempt * 900); }
+    }
+  }
+  return '';
+}
 
 async function callGemini(persona) {
   const key = keyFor('gemini'); if (!key) return null;
+  const contents = history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: String(h.content) }] }));
   for (const model of GEMINI_MODELS) {
-    try {
-      const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({ system_instruction: { parts: [{ text: persona }] }, contents: history.map(h => ({ role: h.role === 'user' ? 'user' : 'model', parts: [{ text: String(h.content) }] })), generationConfig: { maxOutputTokens: 220 } })
-      }, 22000);
-      if (!r.ok) continue;
-      const j = await r.json();
-      const out = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
-      if (out && String(out).trim()) return String(out).trim();
-    } catch (e) {}
+    const out = await geminiTry(model, key, contents, { system_instruction: { parts: [{ text: persona }] } });
+    if (out) return out;
   }
   return null;
 }
@@ -490,17 +517,10 @@ function handleUpload(file) {
 /* per-provider vision (each returns answer text or null) */
 async function visionGemini(dataUrl, b64, q, vp) {
   const key = keyFor('gemini'); if (!key) return null;
+  const contents = [{ parts: [{ text: vp + ' Question: ' + q }, { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }];
   for (const model of GEMINI_MODELS) {
-    try {
-      const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({ contents: [{ parts: [{ text: vp + ' Question: ' + q }, { inline_data: { mime_type: 'image/jpeg', data: b64 } }] }], generationConfig: { maxOutputTokens: 280 } })
-      }, 30000);
-      if (!r.ok) continue;
-      const j = await r.json();
-      const out = j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0] && j.candidates[0].content.parts[0].text;
-      if (out && String(out).trim()) return String(out).trim();
-    } catch (e) {}
+    const out = await geminiTry(model, key, contents);
+    if (out) return out;
   }
   return null;
 }
@@ -1030,6 +1050,17 @@ function bindSettings() {
   $('#setWakeWord').oninput = e => { settings.wakeWord = e.target.value.trim().toLowerCase() || 'aura'; saveSettings(); };
   $('#setProvider').onchange = e => { settings.provider = e.target.value; saveSettings(); };
   $('#exportNotes').onclick = exportNotes;
+  $('#copyLinkBtn').onclick = () => {
+    const p = new URLSearchParams();
+    if (settings.apiKeys.gemini) p.set('gk', settings.apiKeys.gemini);
+    if (settings.apiKeys.claude) p.set('ck', settings.apiKeys.claude);
+    if (settings.apiKeys.openai) p.set('ok', settings.apiKeys.openai);
+    const link = location.origin + location.pathname + (p.toString() ? '?' + p.toString() : '');
+    const show = () => addMsg('aura', `🔗 <b>Your install link</b> — open it on any of your devices and the keys install themselves:<br><a href="${link}" target="_blank" style="word-break:break-all">${esc(link)}</a><br><span class="meta">⚠️ Contains your key(s) — share only with your own devices.</span>`);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(show, show);
+    } else show();
+  };
   $('#wipeData').onclick = () => {
     if (confirm('Erase all AURA data (notes, list, reminders, settings) on this device?')) {
       ['settings', 'notes', 'list', 'reminders', 'alarm'].forEach(k => store.del(k));
@@ -1038,8 +1069,28 @@ function bindSettings() {
   };
 }
 
+/* one-tap key install via URL params (?gk=…&ck=…&ok=…) — keys saved to localStorage, URL scrubbed instantly */
+let keysJustInstalled = [];
+function bootstrapKeysFromURL() {
+  try {
+    const p = new URLSearchParams(location.search);
+    const map = { gk: 'gemini', ck: 'claude', ok: 'openai' };
+    keysJustInstalled = [];
+    Object.keys(map).forEach(k => {
+      const v = p.get(k);
+      if (v && v.trim().length > 8) { settings.apiKeys[map[k]] = v.trim(); keysJustInstalled.push(map[k]); }
+    });
+    if (keysJustInstalled.length) {
+      settings.provider = 'auto'; saveSettings();
+      /* remove keys from the address bar right away so they aren't left in history */
+      window.history.replaceState({}, document.title, location.origin + location.pathname + location.hash);
+    }
+  } catch (e) {}
+}
+
 /* ---------------- boot ---------------- */
 function boot() {
+  bootstrapKeysFromURL();
   bindSettings();
   setState('idle');
   renderActivePanel();
@@ -1059,6 +1110,10 @@ function boot() {
     if (!store.get('welcomed', false) && !keyFor('gemini')) {
       store.set('welcomed', true);
       addMsg('aura', `💡 <b>One-time power-up:</b> I'm on my free backup brain — it can get overloaded at busy times. For instant full-power answers + vision, grab a <a href="https://aistudio.google.com/apikey" target="_blank">free Gemini key</a> (2 min, no card) and paste it in <a href="#" class="opensettings">⚙ Settings</a>. Say <b>“brain test”</b> anytime to check my engines.`);
+    }
+    if (keysJustInstalled.length) {
+      addMsg('aura', `✅ <b>Key installed</b> — full-power brain unlocked (${keysJustInstalled.join(', ').replace(/gemini/i, 'Gemini · Astra-class')})! Ask me anything, snap a 📷 photo, and say <b>“brain test”</b> to watch every engine go green.`);
+      speak('Key installed! Full-power brain unlocked — ask me anything.');
     }
     startMic(settings.handsFree);
   };
